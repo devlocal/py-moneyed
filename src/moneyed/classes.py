@@ -46,6 +46,50 @@ class CurrencyDoesNotExist(Exception):
             u"No currency with code %s is defined." % code)
 
 
+class BrokerException(Exception):
+
+    def __init__(self, from_currency, to_currency):
+        super(BrokerException, self).__init__("Broker cannot convert from %s to %s" % (from_currency, to_currency))
+
+
+class Broker(object):
+    """Broker is a base class to provide exchange rates.
+    Should be overridden by user of py-moneyed and registered with set_broker().
+    See test_moneyed_classes.py for simple implementation."""
+
+    def get_exchange_rate(self, from_currency, to_currency):
+        """Returns exchange rate as Decimal -- multiplication factor
+        to convert amount in from_currency to amount in to_currency.
+
+        If from_currency is EUR and to_currency is USD and 10 EUR is 13 USD,
+        the function must return Decimal('1.3').
+
+        Should be overridden in a child class."""
+
+        if from_currency == to_currency:
+            return Decimal(1)
+        raise BrokerException(from_currency, to_currency)
+
+    def convert(self, value, to):
+        return Money(
+            amount=value.amount * self.get_exchange_rate(value.currency, to),
+            currency=to)
+
+
+def set_broker(broker):
+    global BROKER
+    BROKER = broker
+
+
+def get_broker():
+    try:
+        return BROKER
+    except NameError:
+        # Fallback to default Broker() implementation if no custom broker is provided
+        set_broker(Broker())
+        return BROKER
+
+
 class Money(object):
     """
     A Money instance is a combination of data - an amount and a
@@ -85,16 +129,20 @@ class Money(object):
             currency=self.currency)
 
     def __add__(self, other):
+        # This way sum() can be used to summarize Money
+        if other == 0:
+            return Money(
+                amount=self.amount,
+                currency=self.currency)
         if not isinstance(other, Money):
             raise TypeError('Cannot add or subtract a ' +
                             'Money and non-Money instance.')
-        if self.currency == other.currency:
-            return Money(
-                amount=self.amount + other.amount,
-                currency=self.currency)
-
-        raise TypeError('Cannot add or subtract two Money ' +
-                        'instances with different currencies.')
+        if self.currency != other.currency:
+            # Convert other to self.currency
+            other = other.convert(self.currency)
+        return Money(
+            amount=self.amount + other.amount,
+            currency=self.currency)
 
     def __sub__(self, other):
         return self.__add__(-other)
@@ -110,7 +158,8 @@ class Money(object):
     def __div__(self, other):
         if isinstance(other, Money):
             if self.currency != other.currency:
-                raise TypeError('Cannot divide two different currencies.')
+                # Convert other to self.currency
+                other = get_broker().convert(other, self.currency)
             return self.amount / other.amount
         else:
             return Money(
@@ -142,9 +191,12 @@ class Money(object):
     # _______________________________________
     # Override comparison operators
     def __eq__(self, other):
-        return isinstance(other, Money)\
-               and (self.amount == other.amount) \
-               and (self.currency == other.currency)
+        if isinstance(other, Money):
+            if self.currency != other.currency:
+                other = other.convert(self.currency)
+            return self.amount == other.amount
+        else:
+            return False
 
     def __ne__(self, other):
         result = self.__eq__(other)
@@ -153,24 +205,25 @@ class Money(object):
     def __lt__(self, other):
         if not isinstance(other, Money):
             raise MoneyComparisonError(other)
-        if (self.currency == other.currency):
-            return (self.amount < other.amount)
-        else:
-            raise TypeError('Cannot compare Money with different currencies.')
+        if self.currency != other.currency:
+            other = other.convert(self.currency)
+        return self.amount < other.amount
 
     def __gt__(self, other):
         if not isinstance(other, Money):
             raise MoneyComparisonError(other)
-        if (self.currency == other.currency):
-            return (self.amount > other.amount)
-        else:
-            raise TypeError('Cannot compare Money with different currencies.')
+        if self.currency != other.currency:
+            other = other.convert(self.currency)
+        return self.amount > other.amount
 
     def __le__(self, other):
         return self < other or self == other
 
     def __ge__(self, other):
         return self > other or self == other
+
+    def convert(self, to):
+        return get_broker().convert(self, to)
 
 
 # ____________________________________________________________________

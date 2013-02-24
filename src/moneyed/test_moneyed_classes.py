@@ -1,10 +1,24 @@
 #file test_moneyed_classes.py
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 import pytest  # Works with less code, more consistency than unittest.
 
-from moneyed.classes import Currency, Money, MoneyComparisonError, CURRENCIES, DEFAULT_CURRENCY
+from moneyed.classes import Currency, Money, MoneyComparisonError, Broker, BrokerException, CURRENCIES, DEFAULT_CURRENCY
+from moneyed import classes
 from moneyed.localization import format_money
+
+
+class SimpleBroker(Broker):
+
+    def get_exchange_rate(self, from_currency, to_currency):
+        if (from_currency, to_currency) == (CURRENCIES['USD'], CURRENCIES['EUR']):
+            return Decimal.from_float(1.0 / 1.3)
+        if (from_currency, to_currency) == (CURRENCIES['EUR'], CURRENCIES['USD']):
+            return Decimal.from_float(1.3)
+        return super(SimpleBroker, self).get_exchange_rate(from_currency, to_currency)
+
+
+classes.set_broker(SimpleBroker())
 
 
 class TestCurrency:
@@ -30,8 +44,13 @@ class TestMoney:
     def setup_method(self, method):
         self.one_million_decimal = Decimal('1000000')
         self.USD = CURRENCIES['USD']
+        self.EUR = CURRENCIES['EUR']
         self.one_million_bucks = Money(amount=self.one_million_decimal,
                                        currency=self.USD)
+        self.usd10 = Money(amount=10, currency=self.USD)
+        self.usd13 = Money(amount=13, currency=self.USD)
+        self.usd20 = Money(amount=20, currency=self.USD)
+        self.eur10 = Money(amount=10, currency=self.EUR)
 
     def test_init(self):
         one_million_dollars = Money(amount=self.one_million_decimal,
@@ -71,9 +90,19 @@ class TestMoney:
         assert (self.one_million_bucks + self.one_million_bucks
                 == Money(amount='2000000', currency=self.USD))
 
+    def test_add_zero(self):
+        assert self.usd10 + 0 == self.usd10
+        assert self.usd10 + 0.0 == self.usd10
+        assert self.usd10 + Decimal('0') == self.usd10
+
     def test_add_non_money(self):
         with pytest.raises(TypeError):
             Money(1000) + 123
+
+    def test_sum(self):
+        s = sum([self.usd10, self.usd13, self.usd20])
+        assert s.amount == 43
+        assert s.currency == self.USD
 
     def test_sub(self):
         zeroed_test = self.one_million_bucks - self.one_million_bucks
@@ -97,10 +126,12 @@ class TestMoney:
         y = Money(amount=2, currency=self.USD)
         assert x / y == Decimal(25)
 
+    # IMPORTANT: mismatched currencies division raises now
+    # BrokerException (if exchange rate is not available), not TypeError
     def test_div_mismatched_currencies(self):
         x = Money(amount=50, currency=self.USD)
         y = Money(amount=2, currency=CURRENCIES['CAD'])
-        with pytest.raises(TypeError):
+        with pytest.raises(BrokerException):
             assert x / y == Money(amount=25, currency=self.USD)
 
     def test_div_by_non_Money(self):
@@ -155,3 +186,38 @@ class TestMoney:
         x = 1.0
         with pytest.raises(MoneyComparisonError):
             assert self.one_million_bucks > x
+
+    def test_simple_currency_conversion(self):
+        with localcontext() as ctx:
+            # Limit precision
+            ctx.prec = 10
+
+            assert self.usd13.convert(self.EUR) == Money(amount=10, currency=self.EUR)
+            assert self.usd13.convert(self.EUR).convert(self.USD) == self.usd13
+            assert self.eur10.convert(self.USD).convert(self.EUR) == self.eur10
+
+            # Conversion to the same currency doesn't change anything
+            assert self.usd10.convert(self.USD) == self.usd10
+
+    def test_addition_of_different_currencies(self):
+        with localcontext() as ctx:
+            # Limit precision
+            ctx.prec = 10
+
+            x1 = self.usd10 + self.eur10
+            x2 = self.eur10 + self.usd13
+
+            assert x1.amount == 23
+            assert x1.currency == self.USD
+
+            assert x2.amount == 20
+            assert x2.currency == self.EUR
+
+    def test_comparison_of_different_currencies(self):
+        with localcontext() as ctx:
+            # Limit precision
+            ctx.prec = 10
+
+            assert self.usd13 == self.eur10
+            assert self.usd10 < self.eur10
+            assert self.usd20 > self.eur10
